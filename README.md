@@ -13,7 +13,7 @@ A community platform where neighbors report local problems, volunteers claim and
   <img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange">
 </p>
 
-<p><a href="https://YOUR-USERNAME.github.io/cs-society/"><strong>Live site</strong></a></p>
+<p><a href="https://sharonfrancilin.github.io/cs-society/"><strong>Live site</strong></a></p>
 
 </div>
 

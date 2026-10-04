@@ -95,57 +95,6 @@ cs-society/
 └── supabase/
     └── schema.sql      # Tables, RLS policies, functions, storage, realtime
 ```
-
----
-
-## Getting started
-
-### Prerequisites
-
-- A free [Supabase](https://supabase.com/) account
-- A free [GitHub](https://github.com/) account
-- [VS Code](https://code.visualstudio.com/) with the **Live Server** extension (or any static file server)
-
-### 1. Create the Supabase project
-
-1. In Supabase click **New project**. Choose a name, a strong database password and the nearest region.
-2. Open **SQL Editor, New query**, paste the full contents of [`supabase/schema.sql`](supabase/schema.sql) and click **Run**. You should see **Success**.
-3. Open **Authentication, Sign In / Providers** and check that **Allow new users to sign up** and the **Email** provider are on.
-4. For local testing, turn **Confirm email** off. See the [production checklist](#production-checklist) for turning it back on.
-
-### 2. Add your project keys
-
-Open **Project Settings, API** and copy the **Project URL** and the **publishable** (anon) key into `config.js`:
-
-```js
-window.CS_CONFIG = {
-  SUPABASE_URL: "https://YOUR-PROJECT-ID.supabase.co",
-  SUPABASE_ANON_KEY: "sb_publishable_..."
-};
-```
-
-> [!WARNING]
-> Never put the `secret` or `service_role` key in this repository. It bypasses every security rule.
-
-### 3. Run it locally
-
-Open the folder in VS Code and use **Go Live** (Live Server). Or from a terminal in the project folder:
-
-```bash
-python -m http.server 5500
-# then open http://127.0.0.1:5500
-```
-
-Do not open `index.html` by double-clicking it. Authentication and location need `http://localhost` or `https://`.
-
-### 4. Check that it works
-
-1. Create an account, then sign out and sign in again.
-2. In Supabase open **Table Editor, profiles**. Your account should be listed.
-3. Change your location in your profile and refresh. It should be remembered.
-
----
-
 ## Deployment
 
 1. Push the repository to GitHub as a **public** repository named `cs-society`.

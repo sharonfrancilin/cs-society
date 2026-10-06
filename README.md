@@ -28,6 +28,7 @@ A community platform where neighbors report local problems, volunteers claim and
 - [Getting started](#getting-started)
 - [Deployment](#deployment)
 - [Configuration reference](#configuration-reference)
+- [Admin dashboard](#admin-dashboard)
 - [Database](#database)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
@@ -50,6 +51,7 @@ A community platform where neighbors report local problems, volunteers claim and
 - Post progress updates and mark the job resolved.
 
 **For everyone**
+- Shared data: reports, photos, claims and updates are stored in Supabase, so every user sees the same reports, and changes appear live.
 - Email sign-up and sign-in, password reset, and one account that can be both a resident and a volunteer.
 - Profile with a map-based location picker.
 - Responsive, accessible interface in a white and green design.
@@ -88,12 +90,14 @@ flowchart LR
 
 ```
 cs-society/
-├── index.html          # The whole app: markup, styles and scripts
+├── index.html          # The public app: markup, styles and scripts
+├── admin.html          # Admin dashboard (admins only)
 ├── config.js           # Supabase URL and publishable key (safe to publish)
 ├── .nojekyll           # Tells GitHub Pages to serve files as they are
 ├── README.md
 └── supabase/
-    └── schema.sql      # Tables, RLS policies, functions, storage, realtime
+    ├── schema.sql      # Tables, RLS policies, functions, storage, realtime
+    └── admin.sql       # Admin-only functions, action log, first-admin line
 ```
 
 ---
@@ -110,8 +114,9 @@ cs-society/
 
 1. In Supabase click **New project**. Choose a name, a strong database password and the nearest region.
 2. Open **SQL Editor, New query**, paste the full contents of [`supabase/schema.sql`](supabase/schema.sql) and click **Run**. You should see **Success**.
-3. Open **Authentication, Sign In / Providers** and check that **Allow new users to sign up** and the **Email** provider are on.
-4. For local testing, turn **Confirm email** off. See the [production checklist](#production-checklist) for turning it back on.
+3. Open a new query, paste [`supabase/admin.sql`](supabase/admin.sql) and click **Run**. This adds the admin dashboard's functions.
+4. Open **Authentication, Sign In / Providers** and check that **Allow new users to sign up** and the **Email** provider are on.
+5. For local testing, turn **Confirm email** off. See the [production checklist](#production-checklist) for turning it back on.
 
 ### 2. Add your project keys
 
@@ -170,6 +175,28 @@ If `config.js` is left with the placeholders, the app falls back to a local-only
 
 ---
 
+## Admin dashboard
+
+`admin.html` is a separate page for moderators: overview numbers and charts, a searchable reports table with bulk actions, a moderation queue for flagged reports, people and volunteer hours, an activity log, and CSV or JSON export.
+
+**Make yourself the first admin**
+
+1. Create an account on the site first.
+2. In Supabase open **SQL Editor, New query** and run this, with your own email:
+
+```sql
+update public.profiles set is_admin = true
+  where id = (select id from auth.users where email = 'you@example.com');
+```
+
+3. Refresh the site. An **Admin** link now appears in your menu, and `admin.html` opens.
+
+**How access is protected**
+
+- The page checks that you are signed in and that `is_admin` is true. Anyone else sees "Access denied".
+- That check is only for convenience. The real protection is in the database: every admin action is a function that refuses anyone who is not an admin, and only admins can read flags, the action log and other people's hours.
+- Admins edit reports, change status, assign or release volunteers and delete reports. Each action is written to `admin_log`, and the reporter is notified when their status changes.
+
 ## Database
 
 The schema is created by [`supabase/schema.sql`](supabase/schema.sql).
@@ -184,6 +211,7 @@ The schema is created by [`supabase/schema.sql`](supabase/schema.sql).
 | `issue_events` | Timeline: reported, claim, release, status, note | Everyone |
 | `notifications` | Per-user notifications | Owner only |
 | `flags` | Reports to moderators | Admins only |
+| `admin_log` | Record of admin actions | Admins only |
 
 **Functions (RPC)**
 
@@ -233,14 +261,15 @@ Reports are never edited directly. They change only through these functions, whi
 ## Roadmap
 
 - [x] **Stage 1:** authentication, profiles, saved location, map, live location, directions
-- [ ] **Stage 2:** reports, claims, updates and resolving stored in the database
-- [ ] **Stage 3:** photo uploads to Supabase Storage
-- [ ] **Stage 4:** real-time notifications and live list updates
-- [ ] **Stage 5:** moderation and an admin dashboard
+- [x] **Stage 2:** reports, claims, updates, flags and resolving stored in the database
+- [x] **Stage 3:** report, update and profile photos uploaded to Supabase Storage
+- [x] **Stage 4:** notifications from the database and live updates (Supabase Realtime)
+- [x] **Admin dashboard** page and admin-only database functions (shows real reports once Stage 2 is done)
+- [ ] **Stage 5:** moderation tools in the public site, such as a Flag button
 - [ ] **Stage 6:** forward reports to the local authority, impact reports
 
 > [!NOTE]
-> Until Stage 2 is complete, reports are still stored in each person's own browser, so different users do not see each other's reports.
+> With Supabase configured, everyone sees the same reports. Without it (`config.js` left as placeholders) the page falls back to a local-only mode that keeps data in the browser.
 
 ---
 

@@ -547,6 +547,7 @@ main h1:focus{outline:none}
 .emptybox h3{margin:0}.emptybox p{margin:0 0 8px;max-width:46ch}
 .baf.nophoto{display:grid;place-items:center;aspect-ratio:16/9;background:var(--soft);color:var(--teal-d);border-radius:12px}
 .baf.nophoto .ic{width:34px;height:34px}
+@media(min-width:860px){.primary a#adminLink::before{content:"\2699"}}
 </style>
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -611,7 +612,7 @@ function seed(){return {v:3,signedIn:false,mode:'resident',hours:0,extraReported
   profile:{name:'',email:'',hood:'',roles:['resident','volunteer'],photo:null,prefs:{claimed:true,update:true,resolved:true,milestone:true,near:false}},
   issues:[],notifs:[],nid:1}}
 function load(){try{const s=JSON.parse(localStorage.getItem(KEY));if(s&&s.v===3)return s}catch(e){}return seed()}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){}if(typeof queuePush==='function')queuePush()}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(typeof SB!=='undefined'&&SB?Object.assign({},state,{issues:[],notifs:[]}):state))}catch(e){}if(typeof queuePush==='function')queuePush()}
 state=load();if(!state.loc)state.loc={lat:10.8155,lng:78.6965,label:'Tiruchirappalli, Tamil Nadu'};
 
 /* ---------- backend (Supabase) ---------- */
@@ -621,6 +622,7 @@ let pushTimer=0,lastSig='';
 function queuePush(){if(!SB||!state.uid)return;clearTimeout(pushTimer);pushTimer=setTimeout(pushProfile,700)}
 async function pushProfile(){
   if(!SB||!state.uid)return;const p=state.profile;
+  if(p.photo&&p.photo.startsWith('data:')){try{p.photo=await uploadPhoto(p.photo);save()}catch(e){}}
   const body={name:p.name,roles:p.roles};if(p.photo&&/^https?:/.test(p.photo))body.photo_url=p.photo;
   const set={loc_lat:state.loc.lat,loc_lng:state.loc.lng,loc_label:state.loc.label,prefs:p.prefs};
   const sig=JSON.stringify([body,set]);if(sig===lastSig)return;lastSig=sig;
@@ -628,24 +630,64 @@ async function pushProfile(){
 async function loadProfile(uid){
   try{const a=await SB.from('profiles').select('*').eq('id',uid).maybeSingle(),b=await SB.from('user_settings').select('*').eq('user_id',uid).maybeSingle();
     const pr=a.data,st=b.data;
-    if(pr){if(pr.name)state.profile.name=pr.name;if(pr.roles&&pr.roles.length)state.profile.roles=pr.roles;if(pr.photo_url)state.profile.photo=pr.photo_url;
+    if(pr){state.profile.isAdmin=!!pr.is_admin;if(pr.name)state.profile.name=pr.name;if(pr.roles&&pr.roles.length)state.profile.roles=pr.roles;if(pr.photo_url)state.profile.photo=pr.photo_url;
       if(!state.profile.roles.includes(state.mode))state.mode=state.profile.roles[0]}
     if(st){if(st.prefs)state.profile.prefs=Object.assign({},state.profile.prefs,st.prefs);state.hours=+st.hours||0;
       if(st.loc_lat!=null&&st.loc_lng!=null)setLoc(st.loc_lat,st.loc_lng,st.loc_label||'My location',true)}
   }catch(e){}}
+
+/* ---------- shared data (Supabase) ---------- */
+if(SB){state.issues=[];state.notifs=[]}
+async function pageAll(table,col,asc){const out=[];for(let from=0;;from+=1000){const r=await SB.from(table).select('*').order(col,{ascending:asc}).range(from,from+999);if(r.error)throw r.error;out.push(...r.data);if(r.data.length<1000)break}return out}
+async function loadIssues(){
+  if(!SB)return;
+  try{
+    const [rows,ev,pr]=await Promise.all([pageAll('issues','created_at',false),pageAll('issue_events','created_at',true),SB.from('profiles').select('id,name')]);
+    NAMES={};(pr.data||[]).forEach(p=>NAMES[p.id]=p.name||'');
+    const me=state.uid,m=id=>id?(id===me?'me':id):null,tl={};
+    ev.forEach(e=>(tl[e.issue_id]=tl[e.issue_id]||[]).push({ts:Date.parse(e.created_at),who:m(e.author_id)||'a',type:e.type,text:e.text,status:e.status||undefined,photo:e.photo_url||undefined}));
+    state.issues=rows.map(r=>{const q=toXY({lat:r.lat,lng:r.lng});return{id:r.id,title:r.title,cat:r.category,status:r.status,x:q.x,y:q.y,place:r.place,desc:r.description,reporter:m(r.reporter_id),volunteer:m(r.volunteer_id),reportedAt:Date.parse(r.created_at),timeline:tl[r.id]||[]}});
+  }catch(e){console.warn('Could not load reports',e)}}
+async function loadMine(){
+  if(!SB||!state.uid){state.notifs=[];return}
+  try{const n=await SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(100);
+    if(!n.error)state.notifs=n.data.map(x=>({id:x.id,type:x.type,ts:Date.parse(x.created_at),read:x.read,issue:x.issue_id,text:x.text}));
+    const h=await SB.from('user_settings').select('hours').eq('user_id',state.uid).maybeSingle();if(h.data)state.hours=+h.data.hours||0}catch(e){}}
+const refreshData=()=>Promise.all([loadIssues(),loadMine()]);
+function markRead(id){if(!SB||!state.uid)return;let q=SB.from('notifications').update({read:true}).eq('user_id',state.uid);if(id)q=q.eq('id',id);q.then(()=>{})}
+async function uploadPhoto(dataUrl){
+  if(!dataUrl||!SB||!state.uid||!dataUrl.startsWith('data:'))return dataUrl||null;
+  const blob=await (await fetch(dataUrl)).blob();
+  const path=state.uid+'/'+Date.now()+'-'+Math.random().toString(36).slice(2,8)+'.jpg';
+  const r=await SB.storage.from('photos').upload(path,blob,{contentType:'image/jpeg',cacheControl:'31536000'});
+  if(r.error)throw r.error;
+  return SB.storage.from('photos').getPublicUrl(path).data.publicUrl}
+async function dbDo(call,i,after,msg){
+  try{const r=await call();if(r.error)throw r.error;await refreshData();refreshIssue(iss(i.id)||i);if(after)after();if(msg)toast(msg)}
+  catch(e){toast((e&&e.message)||'That didn’t work. Please try again.')}}
+function softRender(){
+  if(dlg.open)return;const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return;
+  const r=parseHash().parts[0]||'home';
+  if(r==='solve'){try{updateSolve()}catch(e){rerender()}}
+  else if(['home','issue','impact','notifications'].includes(r))rerender();
+  renderChrome(r)}
+let rtCh=null,rtTimer=0;
+function startRealtime(){if(!SB||rtCh)return;const f=()=>{clearTimeout(rtTimer);rtTimer=setTimeout(()=>refreshData().then(softRender),500)};
+  rtCh=SB.channel('cs-live');['issues','issue_events','notifications'].forEach(t=>rtCh.on('postgres_changes',{event:'*',schema:'public',table:t},f));rtCh.subscribe()}
 async function applySession(sess){
   if(!SB)return;
   if(sess&&sess.user){
     if(state.uid===sess.user.id&&state.signedIn)return;
     state.uid=sess.user.id;state.signedIn=true;state.profile.email=sess.user.email;
-    await loadProfile(sess.user.id);save();renderChrome(parseHash().parts[0]||'home');
+    await loadProfile(sess.user.id);await refreshData();save();renderChrome(parseHash().parts[0]||'home');
     if(parseHash().parts[0]!=='auth')rerender();
-  }else if(state.uid){state.uid=null;state.signedIn=false;state.profile=seed().profile;save();renderChrome('home')}}
+  }else if(state.uid){state.uid=null;state.signedIn=false;state.profile=seed().profile;state.notifs=[];save();refreshData().then(softRender);renderChrome('home')}}
 
 /* ---------- helpers ---------- */
 const iss=id=>state.issues.find(i=>i.id===+id);
 const short=n=>{const p=String(n||'Neighbor').trim().split(/\s+/);return p.length>1?p[0]+' '+p[p.length-1][0].toUpperCase()+'.':p[0]};
-const who=id=>id==='me'?short(state.profile.name):(PPL[id]||'A neighbor');
+let NAMES={};
+const who=id=>id==='me'?short(state.profile.name):(NAMES[id]?short(NAMES[id]):'A neighbor');
 const whoTag=id=>id==='me'?who(id)+' (you)':who(id);
 const initials=n=>String(n||'N').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();
 const rel=ts=>{const m=Math.round((Date.now()-ts)/6e4);if(m<1)return'just now';if(m<60)return m+' min ago';const h=Math.round(m/60);if(h<24)return h+' hr ago';const d=Math.round(h/24);if(d===1)return'yesterday';if(d<7)return d+' days ago';return new Date(ts).toLocaleDateString(undefined,{day:'numeric',month:'short'})};
@@ -655,13 +697,14 @@ const distKm=i=>Math.hypot(i.x-HOME.x,i.y-HOME.y)*KM;
 const distTxt=i=>distKm(i).toFixed(1)+' km';
 function locLabel(x,y){const q=toLL(x,y);return (D.place&&D.px===x&&D.py===y)?D.place:'Pinned location ('+q[0].toFixed(4)+', '+q[1].toFixed(4)+')'}
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('show'),3800)}
-function addNotif(type,issue,text){if(state.profile.prefs[type]===false)return;state.notifs.unshift({id:state.nid++,type,ts:Date.now(),read:false,issue,text})}
+function addNotif(type,issue,text){if(SB&&state.uid)return;if(state.profile.prefs[type]===false)return;state.notifs.unshift({id:state.nid++,type,ts:Date.now(),read:false,issue,text})}
 function addTL(i,type,text,x){i.timeline.push(Object.assign({ts:Date.now(),who:'me',type,text:text||''},x||{}))}
+const isImg=p=>!!p&&(p.startsWith('data:')||/^https?:\/\//.test(p));
 const photoOf=(i)=>{const t=i.timeline.find(t=>t.type==='reported'&&t.photo);return t?t.photo:null};
-const lastAfter=(i)=>{const t=[...i.timeline].reverse().find(t=>(t.photo&&t.photo.startsWith('data:')&&t.type!=='reported'));return t?t.photo:null};
+const lastAfter=(i)=>{const t=[...i.timeline].reverse().find(t=>(isImg(t.photo)&&t.type!=='reported'));return t?t.photo:null};
 
 
-const photoSrc=(p)=>p&&p.startsWith('data:')?p:'';
+const photoSrc=(p)=>isImg(p)?p:'';
 const altFor=(i,p)=>p==='after'||(p&&p.startsWith('data:')&&false)?`After: ${i.title}`:`Photo for: ${i.title}`;
 
 /* ---------- badges / stats ---------- */
@@ -842,6 +885,8 @@ function renderChrome(r){
   const both=p.roles.length>1;
   const seg=both?`<div class="seg" role="group" aria-label="View the site as"><button type="button" data-mode="resident" aria-pressed="${state.mode==='resident'}">Resident</button><button type="button" data-mode="volunteer" aria-pressed="${state.mode==='volunteer'}">Volunteer</button></div>`:`<span class="rolechip">${p.roles[0]==='volunteer'?'Volunteer':'Resident'}</span>`;
   $('#tools').innerHTML=state.signedIn?`${seg}<a class="iconbtn" href="#/notifications" aria-label="Notifications, ${unread} unread">${ic('bell',22)}${unread?`<span class="dot" aria-hidden="true">${unread}</span>`:''}</a><a class="btn btn-leaf btn-sm hide-sm" href="#/report">${ic('plus',18,2.4)} Report</a><a class="avatar" href="#/me" aria-label="Your profile">${avatarHTML()}</a>`:`<a class="btn btn-leaf btn-sm" href="#/auth?mode=signin">Sign in</a>`;
+  const pn=$('#primaryNav');let al=$('#adminLink');
+  if(state.signedIn&&p.isAdmin){if(!al){al=document.createElement('a');al.id='adminLink';al.href='admin.html';al.textContent='Admin';pn.appendChild(al)}}else if(al)al.remove();
   $$('[data-r]').forEach(a=>{if(a.dataset.r===r)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')});
   $$('#primaryNav a,#tabbar a').forEach(a=>{if(a.dataset.r==='solve')a.setAttribute('href','#/solve?status=all')});
 }
@@ -1029,9 +1074,18 @@ function renderStep(){
     $('#rsend').onclick=submitReport;
   }
 }
-function submitReport(){
+async function submitReport(){
   if(!$('#conf').checked){D.err.conf='Confirm the pin location before sending.';D.confirmed=false;renderStep();$('#conf').focus();return}
   if(!state.signedIn){go('#/auth?mode=signin&next=report');toast('Sign in to send your report. Your answers are saved.');return}
+  if(SB&&state.uid){
+    const btn=$('#rsend');if(btn)btn.disabled=true;
+    try{
+      const url=D.photo&&D.photo!=='sample'?await uploadPhoto(D.photo):null,q=toLL(D.x,D.y);
+      const r=await SB.rpc('create_issue',{p_title:D.title.trim(),p_category:D.cat,p_lat:q[0],p_lng:q[1],p_place:locLabel(D.x,D.y),p_description:D.desc.trim()||D.title.trim(),p_photo_url:url});
+      if(r.error)throw r.error;
+      await refreshData();D.done=r.data;D.err={};renderReport();renderChrome('report');window.scrollTo(0,0)
+    }catch(e){const b2=$('#rsend');if(b2)b2.disabled=false;toast((e&&e.message)||'We couldn’t send the report. Please try again.')}
+    return}
   const prev=earned(),id=state.nextId++,ph=D.photo==='sample'?'before':D.photo,now=Date.now();
   const e={ts:now,who:'me',type:'reported',text:D.desc.trim()};if(ph)e.photo=ph;
   state.issues.unshift({id,title:D.title.trim(),cat:D.cat,status:'New',x:D.x,y:D.y,place:locLabel(D.x,D.y),desc:D.desc.trim()||D.title.trim(),reporter:'me',volunteer:null,reportedAt:now,timeline:[e]});
@@ -1094,8 +1148,10 @@ function refreshIssue(i){save();renderChrome('issue');VIEWS.issue(['issue',i.id]
 function doAct(a,i){
   if(a==='flag')return openFlag(i);
   if(a==='tovol'){state.mode='volunteer';save();renderChrome('issue');return VIEWS.issue(['issue',i.id])}
-  if(a==='enablevol'){state.profile.roles.push('volunteer');state.mode='volunteer';save();toast('Volunteering is on. You can switch views at the top.');renderChrome('issue');return VIEWS.issue(['issue',i.id])}
+  if(a==='enablevol'){state.profile.roles.push('volunteer');state.mode='volunteer';save();if(SB&&state.uid)pushProfile();toast('Volunteering is on. You can switch views at the top.');renderChrome('issue');return VIEWS.issue(['issue',i.id])}
+  if(a==='claim'&&SB&&state.uid)return dbDo(()=>SB.rpc('claim_issue',{p_id:i.id}),i,()=>{if(!LIVE.on)startLive();setTimeout(()=>{const d=$('#dirsec');if(d)d.scrollIntoView({behavior:'smooth',block:'start'})},300)},'You claimed this issue. Directions are shown below.');
   if(a==='claim'){const prev=earned();i.status='Claimed';i.volunteer='me';addTL(i,'claim','');addNotif('claimed',i.id,'You claimed this issue');const ms=checkMilestones(prev);refreshIssue(i);if(!LIVE.on)startLive();setTimeout(()=>{const d=$('#dirsec');if(d)d.scrollIntoView({behavior:'smooth',block:'start'})},300);toast('You claimed this issue. Directions are shown below.'+msTxt(ms));return}
+  if(a==='release'&&SB&&state.uid)return dbDo(()=>SB.rpc('release_issue',{p_id:i.id}),i,null,'Released. The report is open to other volunteers again.');
   if(a==='release'){i.status='New';i.volunteer=null;addTL(i,'release','');save();refreshIssue(i);toast('Released. The report is open to other volunteers again.');return}
   if(a==='start')return openUpdate(i,'In Progress');
   if(a==='resolve')return openUpdate(i,'Resolved');
@@ -1120,6 +1176,16 @@ function openUpdate(i,preset){
       if(st==='Resolved'&&note.length<5)return void setErr($('#un',d),'Add a short note about what was done.');
       if(!changed&&!note&&!photo&&!hrs)return void setErr($('#un',d),'Add a note or a photo to post an update.');
       setErr($('#un',d),'');
+      if(SB&&state.uid){
+        const btn=$('button.btn-primary',d);if(btn)btn.disabled=true;
+        (async()=>{try{
+          const url=photo&&photo!=='sample'?await uploadPhoto(photo):null;
+          const r=await SB.rpc('post_update',{p_id:i.id,p_text:note,p_status:changed?st:null,p_photo_url:url,p_hours:hrs||0});
+          if(r.error)throw r.error;
+          await refreshData();dlg.close();refreshIssue(iss(i.id)||i);
+          toast(changed?(st==='Resolved'?'Marked resolved. Nice work.':'Status updated to '+st+'.'):'Update posted to the timeline.')
+        }catch(err){if(btn)btn.disabled=false;toast((err&&err.message)||'We couldn’t post that. Please try again.')}})();
+        return}
       const prev=earned(),ph=photo==='sample'?(st==='Resolved'?'after':'progress'):photo,x={};
       if(ph)x.photo=ph;if(hrs)x.hrs=hrs;
       if(changed){x.status=st;addTL(i,'status',note,x);i.status=st;if(st==='Resolved')state.extraResolved++}else addTL(i,'note',note,x);
@@ -1135,7 +1201,9 @@ function openFlag(i){
   <fieldset class="field"><legend>Reason</legend><div class="opts">${R.map((r,k)=>`<label class="opt"><input type="radio" name="why" value="${r[0]}"${k===0?' checked':''}><span><b>${r[1]}</b><small>${r[2]}</small></span></label>`).join('')}</div></fieldset>
   <div class="field"><label for="fdt">Details <span class="muted">(optional)</span></label><textarea class="in" id="fdt" maxlength="300"></textarea></div>
   <div class="actions"><button type="button" class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary">Send flag</button></div></form>`,d=>{
-    $('#ff3',d).onsubmit=e=>{e.preventDefault();state.flags.push(i.id);save();VIEWS.issue(['issue',i.id]);
+    $('#ff3',d).onsubmit=e=>{e.preventDefault();
+      if(SB&&state.uid){const w=($('input[name=why]:checked',d)||{}).value||'',t=($('#fdt',d)||{value:''}).value.trim();SB.rpc('flag_issue',{p_id:i.id,p_reason:(w+(t?': '+t:'')).slice(0,300)}).then(r=>{if(r.error)toast(r.error.message)})}
+      state.flags.push(i.id);save();VIEWS.issue(['issue',i.id]);
       d.innerHTML=`<div class="dlg"><button type="button" class="x" data-close aria-label="Close">${ic('x',22)}</button><div class="success"><div class="big">${ic('check',38,2.6)}</div><h2 id="dlgTitle" style="padding:0">Thanks, we’ve got it</h2><p>A community moderator would review this report. Nothing is sent outside this browser.</p><button type="button" class="btn btn-primary" data-close>Done</button></div></div>`;
       $$('[data-close]',d).forEach(b=>b.onclick=()=>dlg.close());
     };
@@ -1202,7 +1270,7 @@ VIEWS.me=function(parts,q){
       save();renderChrome('me');toast(SB&&state.uid?'Saved to your account.':'Saved on this device.');VIEWS.me(parts,q);
     };
     initProfileMap();
-    $('#so').onclick=()=>{if(SB)SB.auth.signOut();state.uid=null;state.signedIn=false;state.profile=seed().profile;save();go('#/auth?mode=signin');toast('Signed out.')};
+    $('#so').onclick=()=>{if(SB)SB.auth.signOut();state.uid=null;state.signedIn=false;state.profile=seed().profile;state.notifs=[];save();setTimeout(()=>refreshData().then(softRender),50);go('#/auth?mode=signin');toast('Signed out.')};
   }
 };
 
@@ -1215,8 +1283,8 @@ VIEWS.notifications=function(parts,q){
   <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:14px"><div class="fchips"><a class="btn btn-sm ${f==='all'?'btn-primary':'btn-ghost'}" href="#/notifications"${f==='all'?' aria-current="true"':''}>All</a><a class="btn btn-sm ${f==='unread'?'btn-primary':'btn-ghost'}" href="#/notifications?f=unread"${f==='unread'?' aria-current="true"':''}>Unread</a></div><button class="btn btn-ghost btn-sm" id="mar"${un?'':' disabled'}>Mark all as read</button></div>
   ${L.length?`<ul class="nlist">${L.map(n=>{const i=n.issue?iss(n.issue):null;return `<li class="nitem${n.read?'':' unread'}"><a href="${i?'#/issue/'+i.id:'#/me'}" data-n="${n.id}"><span class="ni">${ic(NI[n.type]||'bell',22)}</span><span><b>${esc(n.text)}</b>${i?`<small>${esc(i.title)}</small><br>`:''}<small>${timeEl(n.ts)}</small></span>${n.read?'<span class="vh">Read</span>':'<span class="unrd">Unread</span>'}</a></li>`}).join('')}</ul>`:`<div class="empty">${ic('bell',32)}<h3>${f==='unread'?'No unread notifications':'Nothing here yet'}</h3><p>${f==='unread'?'Everything is read.':'When someone claims or updates one of your reports, you’ll see it here.'}</p></div>`}
   <p class="cap" style="margin-top:14px">Notifications appear in the app only. It doesn’t send email or text messages.</p><div style="height:30px"></div></div>`);
-  $$('[data-n]').forEach(a=>a.addEventListener('click',()=>{const n=state.notifs.find(x=>x.id===+a.dataset.n);if(n){n.read=true;save()}}));
-  $('#mar').onclick=()=>{state.notifs.forEach(n=>n.read=true);save();renderChrome('notifications');VIEWS.notifications(parts,q)};
+  $$('[data-n]').forEach(a=>a.addEventListener('click',()=>{const n=state.notifs.find(x=>x.id===+a.dataset.n);if(n){n.read=true;save();markRead(n.id)}}));
+  $('#mar').onclick=()=>{state.notifs.forEach(n=>n.read=true);save();markRead();renderChrome('notifications');VIEWS.notifications(parts,q)};
 };
 
 /* ---------- impact ---------- */
@@ -1281,7 +1349,7 @@ VIEWS.auth=function(parts,q){
     if(SB&&mode==='signin'){
       if(btn)btn.disabled=true;const r=await SB.auth.signInWithPassword({email:AU.email,password:v});if(btn)btn.disabled=false;
       if(r.error){fail(/confirm/i.test(r.error.message)?'Please confirm your email first. Check your inbox for the link.':'That email or password isn’t right.');return}
-      state.uid=r.data.user.id;state.signedIn=true;state.profile.email=AU.email;await loadProfile(state.uid);save();renderChrome('auth');
+      state.uid=r.data.user.id;state.signedIn=true;state.profile.email=AU.email;await loadProfile(state.uid);await refreshData();save();renderChrome('auth');
       ok('Signed in as '+AU.email+'.',()=>{go(!state.profile.name?'#/auth?mode=setup':(next?'#/'+next:'#/'));toast('Signed in.')});return}
     if(SB&&mode==='signup'){
       const r0=($('input[name=role]:checked')||{}).value||'both',roles=r0==='both'?['resident','volunteer']:[r0];
@@ -1303,7 +1371,7 @@ document.addEventListener('click',e=>{
 ($('#resetDemo')||{}).onclick=()=>openDlg(`<div class="dlg"><button type="button" class="x" data-close aria-label="Close">${ic('x',22)}</button><h2 id="dlgTitle">Reset all data?</h2><p class="muted">This clears the reports, updates and settings saved in this browser and restores the sample data.</p><div class="actions"><button type="button" class="btn btn-ghost" data-close>Cancel</button><button type="button" class="btn btn-primary" id="doReset">Reset data</button></div></div>`,d=>{$('#doReset',d).onclick=()=>{try{localStorage.removeItem(KEY)}catch(e){}state=seed();D=newDraft();F={q:'',cat:'all',status:'all',dist:'all',view:'list',sel:null};MV={z:1,cx:400,cy:280};dlg.close();go('#/');route();toast('Data reset.')}});
 window.addEventListener('hashchange',route);
 route();
-if(SB){SB.auth.getSession().then(r=>applySession(r.data&&r.data.session));
+if(SB){refreshData().then(softRender);startRealtime();SB.auth.getSession().then(r=>applySession(r.data&&r.data.session));
   SB.auth.onAuthStateChange((ev,sess)=>{setTimeout(()=>applySession(sess),0)})}
 </script>
 <script>
